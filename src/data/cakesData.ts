@@ -25,6 +25,33 @@ export interface CakeCustomizerOption {
   defaultSelected: boolean;
 }
 
+export interface ProductOptionChoice {
+  id: string;
+  name: string;
+  priceDelta: number;
+  image_url?: string;
+  defaultSelected?: boolean;
+}
+
+export interface ProductOptionGroup {
+  id: string;
+  name: string; // e.g. "Cake Size", "Cake Flavour", "Filling", "Toppings", "Decoration"
+  selectionType: 'single' | 'multiple';
+  required: boolean;
+  maxSelections?: number;
+  choices: ProductOptionChoice[];
+}
+
+export interface CategoryItem {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  image_url: string;
+  isVisible: boolean;
+  sortOrder: number;
+}
+
 export interface CakeStepItem {
   stepNumber: number;
   shortLabel: string;
@@ -34,10 +61,12 @@ export interface CakeStepItem {
 
 export interface CakeItem {
   id: string;
+  slug?: string;
   name: string;
   heroTitleLines: [string, string];
   category: string;
   badge?: string;
+  tags?: string[];
   shortDescription: string;
   fullDescription: string;
   ingredientsStory?: string;
@@ -57,11 +86,88 @@ export interface CakeItem {
   weight: string;
   calories: string;
   isHeroFlavor: boolean;
+  isVisible?: boolean;
+  isAvailable?: boolean;
+  isFeatured?: boolean;
+  displayPriority?: number;
+  deliveryAvailable?: boolean;
+  pickupAvailable?: boolean;
+  stockLimit?: number | null;
+  maxOrderQty?: number;
+  allowCustomMessage?: boolean;
   image_url: string;
+  galleryImages?: string[];
   theme: CakeThemePalette;
   garnishes: [CakeGarnish, CakeGarnish, CakeGarnish];
   customizerOptions: CakeCustomizerOption[];
+  optionGroups?: ProductOptionGroup[];
   steps: CakeStepItem[];
+}
+
+/**
+ * Returns the product's flexible dynamic optionGroups.
+ * If a product uses legacy `customizerOptions`, converts them seamlessly into structured groups
+ * so every product works identically in the dynamic customization UI.
+ */
+export function getEffectiveOptionGroups(cake: CakeItem): ProductOptionGroup[] {
+  if (Array.isArray(cake.optionGroups) && cake.optionGroups.length > 0) {
+    return cake.optionGroups;
+  }
+
+  const groups: ProductOptionGroup[] = [];
+  const weightOpts = cake.customizerOptions.filter((o) => o.category === 'Weight');
+  const spongeOpts = cake.customizerOptions.filter((o) => o.category === 'Sponge');
+  const addonOpts = cake.customizerOptions.filter((o) => o.category === 'Add-ons');
+
+  if (weightOpts.length > 0) {
+    groups.push({
+      id: 'grp-weight',
+      name: 'Size / Weight',
+      selectionType: 'single',
+      required: true,
+      choices: weightOpts.map((o) => ({
+        id: o.id,
+        name: o.name,
+        priceDelta: o.priceDelta,
+        image_url: o.image_url,
+        defaultSelected: o.defaultSelected,
+      })),
+    });
+  }
+
+  if (spongeOpts.length > 0) {
+    groups.push({
+      id: 'grp-sponge',
+      name: 'Flavour / Sponge',
+      selectionType: 'single',
+      required: true,
+      choices: spongeOpts.map((o) => ({
+        id: o.id,
+        name: o.name,
+        priceDelta: o.priceDelta,
+        image_url: o.image_url,
+        defaultSelected: o.defaultSelected,
+      })),
+    });
+  }
+
+  if (addonOpts.length > 0) {
+    groups.push({
+      id: 'grp-addons',
+      name: 'Toppings & Add-ons',
+      selectionType: 'multiple',
+      required: false,
+      choices: addonOpts.map((o) => ({
+        id: o.id,
+        name: o.name,
+        priceDelta: o.priceDelta,
+        image_url: o.image_url,
+        defaultSelected: o.defaultSelected,
+      })),
+    });
+  }
+
+  return groups;
 }
 
 export const DEFAULT_JOURNEY_STEPS: CakeStepItem[] = [

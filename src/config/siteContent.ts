@@ -24,15 +24,21 @@ export interface HomeFoodSection {
 }
 
 export interface SiteContent {
-  // Store & Delivery Settings (Editable in Admin Tab 4)
+  // Store & Operational Settings
   brandName: string;
   tagline: string;
   city: string;
   currency: string;
   whatsappNumber: string;
+  contactEmail?: string;
+  storeAddress?: string;
+  businessHours?: string;
+  deliveryEnabled?: boolean;
+  pickupEnabled?: boolean;
+  acceptingOrders?: boolean;
   deliveryFee: number;
   freeDeliveryMin: number;
-  adminPin: string;
+  adminPin?: string;
 
   // Header & Search
   locationLabel: string;
@@ -103,15 +109,20 @@ export interface SiteContent {
 }
 
 export const DEFAULT_SITE_CONTENT: SiteContent = {
-  // Store & Delivery Settings
+  // Store & Operational Settings
   brandName: storeConfig.brandName,
   tagline: storeConfig.tagline,
   city: storeConfig.city,
   currency: storeConfig.currency,
   whatsappNumber: storeConfig.whatsappNumber,
+  contactEmail: 'orders@eshucakes.com',
+  storeAddress: 'Dhaka & Meherpur Studio Kitchen',
+  businessHours: '9:00 AM – 10:00 PM (Daily)',
+  deliveryEnabled: true,
+  pickupEnabled: true,
+  acceptingOrders: true,
   deliveryFee: storeConfig.deliveryFee,
   freeDeliveryMin: storeConfig.freeDeliveryMin,
-  adminPin: '1234',
 
   // Header & Search
   locationLabel: 'Delivery Area',

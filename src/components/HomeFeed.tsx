@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Heart, Star, Sparkles, Check, Tag, ArrowUpRight, Disc3 } from 'lucide-react';
-import { CakeItem } from '../data/cakesData';
+import { CakeItem, CategoryItem } from '../data/cakesData';
 import { storeConfig } from '../config/storeConfig';
 import { SiteContent } from '../config/siteContent';
 import { getAdaptiveImageUrl } from '../utils/cacheEngine';
@@ -50,6 +50,7 @@ export interface HomeFeedProps {
   siteContent: SiteContent;
   cakes: CakeItem[];
   allCakes?: CakeItem[];
+  categories?: CategoryItem[];
   matchedBadgesMap?: Record<string, string[]>;
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
@@ -67,6 +68,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({
   siteContent,
   cakes,
   allCakes,
+  categories,
   matchedBadgesMap = {},
   selectedCategory,
   onSelectCategory,
@@ -79,6 +81,25 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({
   isMobileLocked = false,
 }) => {
   const [promoExpanded, setPromoExpanded] = useState(false);
+
+  const visibleCategoryPills = [
+    {
+      id: 'সব কেক',
+      label: 'সব কেক',
+      shortLabel: 'সব কেক',
+      image_url: storeConfig.categories[0]?.image_url || '',
+    },
+    ...(categories && categories.length > 0
+      ? categories
+          .filter((c) => c.isVisible !== false)
+          .map((c) => ({
+            id: c.name,
+            label: c.name,
+            shortLabel: c.name,
+            image_url: c.image_url || storeConfig.categories[0]?.image_url || '',
+          }))
+      : storeConfig.categories.slice(1)),
+  ];
 
   const activeOffers = (siteContent.offers || []).filter((o) => o.isActive);
   const displayOffers =
@@ -141,9 +162,9 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({
           </div>
         </div>
 
-        {/* Momentum Horizontal Pill Bar */}
+        {/* Momentum Horizontal Pill Bar (Synced Live with Supabase Categories) */}
         <div className="flex items-center gap-2 overflow-x-auto no-scrollbar snap-x snap-mandatory py-0.5 px-0.5">
-          {storeConfig.categories.map((cat) => {
+          {visibleCategoryPills.map((cat) => {
             const isActive = selectedCategory === cat.id;
 
             return (
@@ -392,10 +413,16 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({
                       </motion.button>
 
                       <div className="flex items-center gap-1">
-                        {hasOffer && (
-                          <span className="text-[0.58rem] font-semibold text-rose-600 bg-rose-100/90 rounded-full px-1.5 py-0.5">
-                            Offer
+                        {cake.isAvailable === false ? (
+                          <span className="text-[0.58rem] font-semibold text-stone-600 bg-stone-200 rounded-full px-1.5 py-0.5">
+                            Sold Out
                           </span>
+                        ) : (
+                          hasOffer && (
+                            <span className="text-[0.58rem] font-semibold text-rose-600 bg-rose-100/90 rounded-full px-1.5 py-0.5">
+                              Offer
+                            </span>
+                          )
                         )}
                         <span className="text-[0.6rem] font-medium text-stone-500 bg-stone-200/55 rounded-full px-1.5 py-0.5">
                           {cake.weight}

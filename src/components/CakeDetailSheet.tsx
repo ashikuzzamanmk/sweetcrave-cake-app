@@ -16,8 +16,14 @@ import {
   ShieldCheck,
   Snowflake,
   ChefHat,
+  AlertCircle,
 } from 'lucide-react';
-import { CakeItem, CakeCustomizerOption } from '../data/cakesData';
+import {
+  CakeItem,
+  ProductOptionGroup,
+  ProductOptionChoice,
+  getEffectiveOptionGroups,
+} from '../data/cakesData';
 import { storeConfig } from '../config/storeConfig';
 import { SiteContent } from '../config/siteContent';
 import { getAdaptiveImageUrl } from '../utils/cacheEngine';
@@ -36,7 +42,9 @@ export interface CakeDetailSheetProps {
     selectedOptionNames: string[],
     unitPrice: number,
     cakeMessage: string,
-    quantity?: number
+    quantity?: number,
+    specialInstructions?: string,
+    addonsUnitPrice?: number
   ) => void;
   isMobileLocked?: boolean;
 }
@@ -54,57 +62,128 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [quantity, setQuantity] = useState<number>(1);
   const [cakeNote, setCakeNote] = useState<string>('');
+  const [specialInstructions, setSpecialInstructions] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
+  const [activeImageIdx, setActiveImageIdx] = useState<number>(0);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [copiedShare, setCopiedShare] = useState<boolean>(false);
+
+  const optionGroups = useMemo(
+    () => (cake ? getEffectiveOptionGroups(cake) : []),
+    [cake]
+  );
+
+  const allImages = useMemo(() => {
+    if (!cake) return [];
+    const extras = (cake.galleryImages || []).filter(
+      (u) => u && u !== cake.image_url
+    );
+    return [cake.image_url, ...extras];
+  }, [cake]);
 
   useEffect(() => {
     if (cake) {
-      const defaults = cake.customizerOptions
-        .filter((opt) => opt.defaultSelected)
-        .map((opt) => opt.id);
+      const defaults: string[] = [];
+      for (const grp of getEffectiveOptionGroups(cake)) {
+        const defaultChoices = grp.choices.filter((c) => c.defaultSelected);
+        if (defaultChoices.length > 0) {
+          defaults.push(
+            ...(grp.selectionType === 'single'
+              ? [defaultChoices[0].id]
+              : defaultChoices.map((c) => c.id))
+          );
+        } else if (grp.required && grp.choices.length > 0) {
+          defaults.push(grp.choices[0].id);
+        }
+      }
       setSelectedIds(defaults);
       setQuantity(1);
       setCakeNote('');
+      setSpecialInstructions('');
       setShowNoteInput(false);
+      setActiveImageIdx(0);
+      setValidationError(null);
     }
   }, [cake]);
 
-  const unitPrice = useMemo(() => {
-    if (!cake) return 0;
-    const addonsSum = cake.customizerOptions
-      .filter((opt) => selectedIds.includes(opt.id))
-      .reduce((acc, opt) => acc + opt.priceDelta, 0);
-    return cake.basePrice + addonsSum;
-  }, [cake, selectedIds]);
+  const { addonsUnitPrice, unitPrice } = useMemo(() => {
+    if (!cake) return { addonsUnitPrice: 0, unitPrice: 0 };
+    let addonsSum = 0;
+    for (const grp of optionGroups) {
+      for (const ch of grp.choices) {
+        if (selectedIds.includes(ch.id)) {
+          addonsSum += Math.max(0, ch.priceDelta);
+        }
+      }
+    }
+    return {
+      addonsUnitPrice: addonsSum,
+      unitPrice: cake.basePrice + addonsSum,
+    };
+  }, [cake, optionGroups, selectedIds]);
 
   const totalPrice = unitPrice * quantity;
 
   if (!cake) return null;
 
+  const isUnavailable = cake.isAvailable === false;
+  const maxQty = Math.max(
+    1,
+    Math.min(
+      cake.maxOrderQty || 20,
+      cake.stockLimit !== null && cake.stockLimit !== undefined && cake.stockLimit > 0
+        ? cake.stockLimit
+        : 20
+    )
+  );
   const currency = siteContent.currency || storeConfig.currency;
   const mood = getRatingExpression(cake.rating);
   const sweetness = Math.min(5, Math.max(1, cake.sweetnessLevel ?? 3));
+  const activeImageUrl = allImages[activeImageIdx] || cake.image_url;
 
-  const toggleOption = (option: CakeCustomizerOption) => {
+  const toggleChoice = (
+    group: ProductOptionGroup,
+    choice: ProductOptionChoice
+  ) => {
+    setValidationError(null);
     setSelectedIds((prev) => {
-      if (option.category === 'Weight' || option.category === 'Sponge') {
-        const sameGroupIds = cake.customizerOptions
-          .filter((o) => o.category === option.category)
-          .map((o) => o.id);
-        const withoutGroup = prev.filter((id) => !sameGroupIds.includes(id));
-        return [...withoutGroup, option.id];
+      const groupIds = group.choices.map((c) => c.id);
+      if (group.selectionType === 'single') {
+        const withoutGroup = prev.filter((id) => !groupIds.includes(id));
+        if (prev.includes(choice.id) && !group.required) {
+          return withoutGroup;
+        }
+        return [...withoutGroup, choice.id];
       }
-      return prev.includes(option.id)
-        ? prev.filter((id) => id !== option.id)
-        : [...prev, option.id];
+
+      if (prev.includes(choice.id)) {
+        return prev.filter((id) => id !== choice.id);
+      }
+
+      if (group.maxSelections && group.maxSelections > 0) {
+        const currentInGroup = prev.filter((id) => groupIds.includes(id));
+        if (currentInGroup.length >= group.maxSelections) {
+          return prev;
+        }
+      }
+      return [...prev, choice.id];
     });
   };
 
   const handleResetDefaults = () => {
-    const defaults = cake.customizerOptions
-      .filter((opt) => opt.defaultSelected)
-      .map((opt) => opt.id);
+    const defaults: string[] = [];
+    for (const grp of optionGroups) {
+      const d = grp.choices.filter((c) => c.defaultSelected);
+      if (d.length > 0) {
+        defaults.push(
+          ...(grp.selectionType === 'single' ? [d[0].id] : d.map((c) => c.id))
+        );
+      } else if (grp.required && grp.choices.length > 0) {
+        defaults.push(grp.choices[0].id);
+      }
+    }
     setSelectedIds(defaults);
+    setValidationError(null);
   };
 
   const handleShare = async () => {
@@ -120,9 +199,27 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
   };
 
   const handleAddToCartClick = () => {
-    const selectedNames = cake.customizerOptions
-      .filter((opt) => selectedIds.includes(opt.id))
-      .map((opt) => opt.name);
+    if (isUnavailable) return;
+
+    // Validate all required option groups
+    for (const grp of optionGroups) {
+      if (grp.required) {
+        const hasChoice = grp.choices.some((c) => selectedIds.includes(c.id));
+        if (!hasChoice) {
+          setValidationError(`Please select an option for "${grp.name}".`);
+          return;
+        }
+      }
+    }
+
+    const selectedNames: string[] = [];
+    for (const grp of optionGroups) {
+      for (const ch of grp.choices) {
+        if (selectedIds.includes(ch.id)) {
+          selectedNames.push(ch.name);
+        }
+      }
+    }
 
     onAddCustomizedToCart(
       cake,
@@ -130,7 +227,9 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
       selectedNames,
       unitPrice,
       cakeNote.trim(),
-      quantity
+      quantity,
+      specialInstructions.trim(),
+      addonsUnitPrice
     );
     onClose();
   };
@@ -221,20 +320,18 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                 isMobileLocked ? '' : 'lg:grid-cols-12'
               } gap-3.5 lg:gap-5 items-start`}
             >
-              {/* TIER 1: VIDEO-2 CURVED DARK-ARCH HERO + INGREDIENTS STORY + QUANTITY CTA */}
+              {/* TIER 1: CURVED DARK-ARCH HERO + INGREDIENTS STORY + QUANTITY CTA */}
               <div
                 className={`${
                   isMobileLocked ? '' : 'lg:col-span-5'
                 } bg-[#FAF6F0] rounded-[28px] sm:rounded-[32px] shadow-xl border-[1px] border-white/90 relative overflow-hidden`}
               >
-                {/* TOP CURVED DARK OBSIDIAN / THEME STAGE (Video 2 Reference — Compact Fit) */}
                 <div
                   style={{
                     background: `linear-gradient(145deg, #141414 0%, ${cake.theme.darkBtn} 100%)`,
                   }}
                   className="relative px-4 pt-3 pb-8 text-white overflow-hidden"
                 >
-                  {/* Soft colored highlight orb */}
                   <div
                     style={{ backgroundColor: cake.theme.wave }}
                     className="absolute -right-8 -top-8 w-36 h-36 rounded-full blur-3xl opacity-35 pointer-events-none"
@@ -252,10 +349,16 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     </motion.button>
 
                     <div className="flex items-center gap-1.5">
-                      {cake.badge && (
-                        <span className="rounded-full bg-amber-300/95 text-stone-950 px-2 py-0.5 text-[0.62rem] font-semibold shadow-xs">
-                          {cake.badge}
+                      {isUnavailable ? (
+                        <span className="rounded-full bg-rose-500 text-white px-2.5 py-0.5 text-[0.62rem] font-bold">
+                          Unavailable
                         </span>
+                      ) : (
+                        cake.badge && (
+                          <span className="rounded-full bg-amber-300/95 text-stone-950 px-2 py-0.5 text-[0.62rem] font-semibold shadow-xs">
+                            {cake.badge}
+                          </span>
+                        )
                       )}
                       <motion.button
                         whileTap={{ scale: 0.9 }}
@@ -290,7 +393,7 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     </div>
                   </div>
 
-                  {/* Video-2 Split Showcase: Left Info + Price, Right Rotating Overhead Cake Plate */}
+                  {/* Split Showcase */}
                   <div className="relative z-10 grid grid-cols-12 items-center gap-2">
                     <div className="col-span-7 space-y-1">
                       <span className="text-[0.62rem] font-semibold uppercase tracking-wider text-amber-300/90 block">
@@ -317,29 +420,55 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                       </div>
                     </div>
 
-                    <div className="col-span-5 flex items-center justify-center">
+                    <div className="col-span-5 flex flex-col items-center justify-center gap-1.5">
                       <motion.div
-                        initial={{ rotate: -22, scale: 0.82, opacity: 0 }}
+                        key={activeImageUrl}
+                        initial={{ rotate: -14, scale: 0.88, opacity: 0.6 }}
                         animate={{ rotate: 0, scale: 1, opacity: 1, y: [0, -4, 0] }}
                         transition={{
                           rotate: { type: 'spring', stiffness: 220, damping: 20 },
                           scale: { type: 'spring', stiffness: 220, damping: 20 },
-                          opacity: { duration: 0.25 },
+                          opacity: { duration: 0.2 },
                           y: { duration: 3.8, repeat: Infinity, ease: 'easeInOut' },
                         }}
                         className="w-[6.5rem] h-[6.5rem] sm:w-[7.25rem] sm:h-[7.25rem] rounded-full bg-white p-1.5 shadow-[0_16px_28px_rgba(0,0,0,0.42)] border-[3px] border-white overflow-hidden shrink-0"
                       >
                         <img
-                          src={getAdaptiveImageUrl(cake.image_url, 'detail')}
+                          src={getAdaptiveImageUrl(activeImageUrl, 'detail')}
                           alt={cake.name}
                           decoding="async"
                           className="w-full h-full object-cover rounded-full"
                         />
                       </motion.div>
+
+                      {/* Multi-image gallery switcher when product has additional photos */}
+                      {allImages.length > 1 && (
+                        <div className="flex items-center gap-1.5">
+                          {allImages.map((imgUrl, idx) => (
+                            <button
+                              key={`${imgUrl}-${idx}`}
+                              type="button"
+                              onClick={() => setActiveImageIdx(idx)}
+                              aria-label={`View image ${idx + 1}`}
+                              className={`w-6 h-6 rounded-full overflow-hidden border-[1.5px] cursor-pointer transition-all ${
+                                activeImageIdx === idx
+                                  ? 'border-amber-300 scale-110'
+                                  : 'border-white/40 opacity-70'
+                              }`}
+                            >
+                              <img
+                                src={getAdaptiveImageUrl(imgUrl, 'thumb')}
+                                alt=""
+                                className="w-full h-full object-cover"
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Curved Cream Organic Arch Wave (Exact Video 2 Transition) */}
+                  {/* Curved Cream Organic Arch Wave */}
                   <svg
                     viewBox="0 0 400 44"
                     preserveAspectRatio="none"
@@ -353,9 +482,8 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                   </svg>
                 </div>
 
-                {/* LOWER CREAM SHEET: INGREDIENTS, BRAND TASTE PROFILE & QUANTITY CTA */}
+                {/* LOWER CREAM SHEET: INGREDIENTS, TASTE PROFILE & QUANTITY CTA */}
                 <div className="px-3.5 sm:px-4 pb-3.5 pt-1 space-y-2.5">
-                  {/* Video-2 Centered "Ingredients" Heading + 3-Stat Taste Pill Row */}
                   <div className="text-center space-y-1.5">
                     <h3 className="font-display text-[0.98rem] font-bold text-stone-900 tracking-tight">
                       Ingredients & Taste Profile
@@ -378,12 +506,10 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     </div>
                   </div>
 
-                  {/* Luxury Brand Ingredients Story */}
                   <p className="text-[0.78rem] text-stone-600 font-medium leading-[1.6]">
                     {cake.ingredientsStory || cake.fullDescription}
                   </p>
 
-                  {/* Personalized "Crafted Specially For You" Chef's Note */}
                   {cake.chefNote && (
                     <div
                       style={{ backgroundColor: cake.theme.surface }}
@@ -406,7 +532,7 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     </div>
                   )}
 
-                  {/* Big-Brand Details Strip: Servings, Texture, Sweetness & Dietary Badges */}
+                  {/* Big-Brand Details Strip */}
                   <div className="space-y-2">
                     <div className="grid grid-cols-2 gap-2 text-[0.7rem]">
                       <div className="bg-white rounded-[14px] px-3 py-2 border-[1px] border-black/5 flex items-center gap-2">
@@ -477,28 +603,45 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     )}
                   </div>
 
-                  {/* Optional Cake Inscription Input */}
+                  {/* Optional Cake Message & Special Instructions */}
                   <AnimatePresence>
                     {showNoteInput && (
                       <motion.div
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: 'auto' }}
                         exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden"
+                        className="overflow-hidden space-y-2"
                       >
+                        {cake.allowCustomMessage !== false && (
+                          <input
+                            type="text"
+                            maxLength={50}
+                            value={cakeNote}
+                            onChange={(e) => setCakeNote(e.target.value)}
+                            placeholder={siteContent.cakeNotePlaceholder}
+                            className="w-full rounded-[14px] bg-white border-[1px] border-stone-200 px-3 py-2 text-[16px] font-semibold text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-800/20"
+                          />
+                        )}
                         <input
                           type="text"
-                          maxLength={45}
-                          value={cakeNote}
-                          onChange={(e) => setCakeNote(e.target.value)}
-                          placeholder={siteContent.cakeNotePlaceholder}
-                          className="w-full rounded-[16px] bg-white border-[1px] border-stone-200 px-3.5 py-2 text-[1rem] font-semibold text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-800/20"
+                          maxLength={120}
+                          value={specialInstructions}
+                          onChange={(e) => setSpecialInstructions(e.target.value)}
+                          placeholder="Special instructions (e.g. less sugar, eggless, pastel pink)"
+                          className="w-full rounded-[14px] bg-white border-[1px] border-stone-200 px-3 py-2 text-[16px] font-medium text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-800/20"
                         />
                       </motion.div>
                     )}
                   </AnimatePresence>
 
-                  {/* Video-2 Bottom Action Row: Quantity Stepper (− 01 +) + Total Price + Add to Cart */}
+                  {validationError && (
+                    <div className="rounded-[12px] bg-rose-50 border-[1px] border-rose-200 px-3 py-2 text-[0.72rem] font-bold text-rose-700 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{validationError}</span>
+                    </div>
+                  )}
+
+                  {/* Bottom Action Row: Quantity Stepper (− 01 +) + Total Price + Add to Cart */}
                   <div className="pt-3 border-t-[1px] border-stone-200/80 space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <div>
@@ -515,14 +658,14 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                         </motion.span>
                       </div>
 
-                      {/* Video-2 Quantity Stepper Pill (− 01 +) */}
                       <div className="inline-flex items-center gap-2.5 rounded-full bg-white border-[1px] border-stone-200/90 px-2 py-1 shadow-2xs">
                         <motion.button
                           whileTap={{ scale: 0.85 }}
                           type="button"
+                          disabled={isUnavailable}
                           onClick={() => setQuantity((q) => Math.max(1, q - 1))}
                           aria-label="Decrease quantity"
-                          className="w-8 h-8 rounded-full bg-[#FAF6F0] hover:bg-stone-200 text-stone-800 flex items-center justify-center cursor-pointer"
+                          className="w-8 h-8 rounded-full bg-[#FAF6F0] hover:bg-stone-200 text-stone-800 flex items-center justify-center cursor-pointer disabled:opacity-40"
                         >
                           <Minus className="w-3.5 h-3.5" />
                         </motion.button>
@@ -532,10 +675,13 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                         <motion.button
                           whileTap={{ scale: 0.85 }}
                           type="button"
-                          onClick={() => setQuantity((q) => Math.min(20, q + 1))}
+                          disabled={isUnavailable || quantity >= maxQty}
+                          onClick={() =>
+                            setQuantity((q) => Math.min(maxQty, q + 1))
+                          }
                           aria-label="Increase quantity"
                           style={{ backgroundColor: cake.theme.darkBtn }}
-                          className="w-8 h-8 rounded-full text-white flex items-center justify-center cursor-pointer chromatic-transition"
+                          className="w-8 h-8 rounded-full text-white flex items-center justify-center cursor-pointer chromatic-transition disabled:opacity-40"
                         >
                           <Plus className="w-3.5 h-3.5" />
                         </motion.button>
@@ -559,15 +705,23 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                       </motion.button>
 
                       <motion.button
-                        whileHover={{ scale: 1.015 }}
-                        whileTap={{ scale: 0.96 }}
+                        whileHover={isUnavailable ? undefined : { scale: 1.015 }}
+                        whileTap={isUnavailable ? undefined : { scale: 0.96 }}
+                        disabled={isUnavailable}
                         onClick={handleAddToCartClick}
-                        style={{ backgroundColor: cake.theme.darkBtn }}
-                        className="flex-1 text-white rounded-full pl-5 pr-2 py-2 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer chromatic-transition"
+                        style={{
+                          backgroundColor: isUnavailable
+                            ? '#78716C'
+                            : cake.theme.darkBtn,
+                        }}
+                        className="flex-1 text-white rounded-full pl-5 pr-2 py-2 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer chromatic-transition disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         <span className="font-display text-[0.875rem] font-extrabold tracking-tight whitespace-nowrap py-0.5">
-                          {siteContent.addToCartBtn} • {currency}{' '}
-                          {totalPrice.toLocaleString('en-US')}
+                          {isUnavailable
+                            ? 'Currently Unavailable'
+                            : `${siteContent.addToCartBtn} • ${currency} ${totalPrice.toLocaleString(
+                                'en-US'
+                              )}`}
                         </span>
                         <span className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center shadow-xs shrink-0">
                           <Plus className="w-4 h-4 stroke-[2.8]" />
@@ -578,29 +732,33 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                 </div>
               </div>
 
-              {/* TIER 2 & 3 (Preserved 100% — 3-Column Bento Customizer + 5-Step Journey Timeline) */}
+              {/* TIER 2 & 3: DYNAMIC PER-PRODUCT CUSTOMIZATION GROUPS + 5-STEP TIMELINE */}
               <div
                 className={`${
                   isMobileLocked ? '' : 'lg:col-span-7'
                 } space-y-3.5 lg:space-y-5`}
               >
-                {/* TIER 2: CUSTOMIZER BENTO CARD */}
-                <div className="bg-[#FAF6F0] rounded-[26px] sm:rounded-[28px] p-3.5 sm:p-5 shadow-lg border-[1px] border-white/90">
-                  <div className="flex items-center justify-between mb-3 gap-2">
+                <div className="bg-[#FAF6F0] rounded-[26px] sm:rounded-[28px] p-3.5 sm:p-5 shadow-lg border-[1px] border-white/90 space-y-4">
+                  <div className="flex items-center justify-between gap-2">
                     <h3 className="font-display text-[0.9rem] sm:text-[1rem] font-extrabold text-stone-900 leading-[1.4] truncate">
-                      {siteContent.customizeTitle} ({selectedIds.length}/
-                      {cake.customizerOptions.length})
+                      {siteContent.customizeTitle}
                     </h3>
 
                     <div className="flex items-center gap-2.5 shrink-0">
                       <button
+                        type="button"
                         onClick={() => setShowNoteInput((prev) => !prev)}
                         className="text-[0.7rem] sm:text-[0.75rem] font-bold text-stone-600 hover:text-stone-900 inline-flex items-center gap-1 cursor-pointer py-0.5"
                       >
                         <Sparkles className="w-3 h-3" />
-                        <span>{cakeNote ? 'Name Saved ✓' : siteContent.cakeNoteBtn}</span>
+                        <span>
+                          {cakeNote || specialInstructions
+                            ? 'Note Added ✓'
+                            : siteContent.cakeNoteBtn}
+                        </span>
                       </button>
                       <button
+                        type="button"
                         onClick={handleResetDefaults}
                         className="text-[0.7rem] sm:text-[0.75rem] font-extrabold text-stone-800 underline underline-offset-4 hover:opacity-75 cursor-pointer py-0.5"
                       >
@@ -609,61 +767,86 @@ export const CakeDetailSheet: React.FC<CakeDetailSheetProps> = ({
                     </div>
                   </div>
 
-                  {/* 3-Column Inner Squircle Tiles */}
-                  <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                    {cake.customizerOptions.map((option) => {
-                      const isSelected = selectedIds.includes(option.id);
-                      return (
-                        <motion.button
-                          key={option.id}
-                          type="button"
-                          whileTap={{ scale: 0.94 }}
-                          onClick={() => toggleOption(option)}
-                          className={`rounded-[16px] p-2 sm:p-2.5 relative flex flex-col items-center text-center transition-all cursor-pointer select-none border-[1px] ${
-                            isSelected
-                              ? 'bg-[#EFE9E0] border-stone-900/20 shadow-xs'
-                              : 'bg-[#EFE9E0]/55 border-transparent opacity-70 hover:opacity-95'
-                          }`}
-                        >
-                          <span
-                            style={{
-                              backgroundColor: isSelected
-                                ? cake.theme.darkBtn
-                                : 'rgba(255,255,255,0.85)',
-                            }}
-                            className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full flex items-center justify-center transition-transform ${
-                              isSelected
-                                ? 'text-white scale-100 shadow-2xs'
-                                : 'text-transparent border-[1px] border-stone-300 scale-90'
-                            }`}
-                          >
-                            <Check className="w-3 h-3 stroke-[3]" />
-                          </span>
+                  {/* Render Every Configurable Option Group Dynamically */}
+                  {optionGroups.map((group) => (
+                    <div key={group.id} className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[0.74rem] font-extrabold text-stone-800">
+                          {group.name}
+                        </span>
+                        <span className="text-[0.62rem] font-bold rounded-full px-2 py-0.5 bg-white border-[1px] border-black/5 text-stone-500">
+                          {group.required ? 'Required' : 'Optional'} •{' '}
+                          {group.selectionType === 'single'
+                            ? 'Choose 1'
+                            : group.maxSelections
+                            ? `Up to ${group.maxSelections}`
+                            : 'Multi-select'}
+                        </span>
+                      </div>
 
-                          <div className="w-10 h-10 sm:w-12 sm:h-12 mt-1 mb-1 rounded-full bg-white p-1 shadow-xs overflow-hidden shrink-0">
-                            <img
-                              src={getAdaptiveImageUrl(option.image_url, 'thumb')}
-                              alt={option.name}
-                              loading="lazy"
-                              decoding="async"
-                              className="w-full h-full object-cover rounded-full"
-                            />
-                          </div>
+                      <div className="grid grid-cols-3 gap-2 sm:gap-2.5">
+                        {group.choices.map((choice) => {
+                          const isSelected = selectedIds.includes(choice.id);
+                          return (
+                            <motion.button
+                              key={choice.id}
+                              type="button"
+                              whileTap={{ scale: 0.94 }}
+                              onClick={() => toggleChoice(group, choice)}
+                              className={`rounded-[16px] p-2 sm:p-2.5 relative flex flex-col items-center text-center transition-all cursor-pointer select-none border-[1px] ${
+                                isSelected
+                                  ? 'bg-[#EFE9E0] border-stone-900/20 shadow-xs'
+                                  : 'bg-[#EFE9E0]/55 border-transparent opacity-75 hover:opacity-95'
+                              }`}
+                            >
+                              <span
+                                style={{
+                                  backgroundColor: isSelected
+                                    ? cake.theme.darkBtn
+                                    : 'rgba(255,255,255,0.85)',
+                                }}
+                                className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full flex items-center justify-center transition-transform ${
+                                  isSelected
+                                    ? 'text-white scale-100 shadow-2xs'
+                                    : 'text-transparent border-[1px] border-stone-300 scale-90'
+                                }`}
+                              >
+                                <Check className="w-2.5 h-2.5 stroke-[3]" />
+                              </span>
 
-                          <span className="text-[0.7rem] font-bold text-stone-800 leading-[1.3] line-clamp-2 min-h-[28px] flex items-center justify-center">
-                            {option.name}
-                          </span>
-                          <span className="text-[0.65rem] font-bold text-stone-500 mt-0.5 tabular-nums">
-                            {option.priceDelta === 0
-                              ? 'Free'
-                              : `+${currency}${option.priceDelta.toLocaleString(
-                                  'en-US'
-                                )}`}
-                          </span>
-                        </motion.button>
-                      );
-                    })}
-                  </div>
+                              {choice.image_url ? (
+                                <div className="w-10 h-10 sm:w-11 sm:h-11 mt-1 mb-1 rounded-full bg-white p-1 shadow-xs overflow-hidden shrink-0">
+                                  <img
+                                    src={getAdaptiveImageUrl(
+                                      choice.image_url,
+                                      'thumb'
+                                    )}
+                                    alt={choice.name}
+                                    loading="lazy"
+                                    decoding="async"
+                                    className="w-full h-full object-cover rounded-full"
+                                  />
+                                </div>
+                              ) : (
+                                <div className="h-3" />
+                              )}
+
+                              <span className="text-[0.68rem] font-bold text-stone-800 leading-[1.28] line-clamp-2 min-h-[26px] flex items-center justify-center">
+                                {choice.name}
+                              </span>
+                              <span className="text-[0.62rem] font-bold text-stone-500 mt-0.5 tabular-nums">
+                                {choice.priceDelta === 0
+                                  ? 'Included'
+                                  : `+${currency}${choice.priceDelta.toLocaleString(
+                                      'en-US'
+                                    )}`}
+                              </span>
+                            </motion.button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 {/* TIER 3: 5-STEP ORDER JOURNEY TIMELINE */}

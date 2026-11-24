@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, Suspense, lazy } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShoppingBag, Sparkles, Check, Monitor } from 'lucide-react';
-import { CakeItem } from './data/cakesData';
+import { CakeItem, getEffectiveOptionGroups } from './data/cakesData';
 import { storeConfig } from './config/storeConfig';
 import { StoreProvider, useStore } from './context/StoreContext';
 import { smartSearchCakes } from './utils/smartSearch';
@@ -24,12 +24,24 @@ import { OrbitalCakeWheel } from './components/OrbitalCakeWheel';
 const AdminPanel = lazy(() => import('./components/admin/AdminPanel'));
 
 function StorefrontApp() {
-  // 1. Reactive Store Context (`siteContent` + `cakes` hydrated <1ms from phone cache)
-  const { siteContent, cakes: menuCakes, refreshFromServer } = useStore();
+  // 1. Reactive Store Context (`siteContent` + `cakes` + `categories` live from Supabase)
+  const {
+    siteContent,
+    cakes: allMenuCakes,
+    categories,
+    refreshFromServer,
+  } = useStore();
+
+  // Only display visible products on the public storefront (ordered by displayPriority)
+  const menuCakes = useMemo(() => {
+    return allMenuCakes
+      .filter((c) => c.isVisible !== false)
+      .sort((a, b) => (a.displayPriority ?? 999) - (b.displayPriority ?? 999));
+  }, [allMenuCakes]);
 
   // 2. Active Hero Flavor & Chromatic Theme Engine State
   const heroFlavors = useMemo(() => {
-    const flagged = menuCakes.filter((c) => c.isHeroFlavor);
+    const flagged = menuCakes.filter((c) => c.isHeroFlavor || c.isFeatured);
     return flagged.length > 0 ? flagged : menuCakes.slice(0, 4);
   }, [menuCakes]);
 
@@ -52,15 +64,24 @@ function StorefrontApp() {
   );
   const [showWishlistOnly, setShowWishlistOnly] = useState<boolean>(false);
 
-  // Keep selectedCategory valid if categories list changes in Admin
+  // Keep selectedCategory valid if live categories change in Admin
+  const activeCategoryNames = useMemo(() => {
+    const liveVisible = categories
+      .filter((c) => c.isVisible !== false)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((c) => c.name);
+    if (liveVisible.length > 0) return liveVisible;
+    return siteContent.categories;
+  }, [categories, siteContent.categories]);
+
   useEffect(() => {
     if (
-      siteContent.categories.length > 0 &&
-      !siteContent.categories.includes(selectedCategory)
+      activeCategoryNames.length > 0 &&
+      !activeCategoryNames.includes(selectedCategory)
     ) {
-      setSelectedCategory(siteContent.categories[0]);
+      setSelectedCategory(activeCategoryNames[0]);
     }
-  }, [siteContent.categories, selectedCategory]);
+  }, [activeCategoryNames, selectedCategory]);
 
   // 4. Local-First Phone-Cached Wishlist & Cart State
   const [wishlistIds, setWishlistIds] = useState<string[]>(() =>
@@ -153,7 +174,7 @@ function StorefrontApp() {
 
   // Smart Bilingual Search + Category & Wishlist Filtering
   const { filteredCakes, matchedBadgesMap } = useMemo(() => {
-    const allCategory = siteContent.categories[0] || 'সব কেক';
+    const allCategory = activeCategoryNames[0] || 'সব কেক';
 
     const baseList = menuCakes.filter((cake) => {
       if (showWishlistOnly && !wishlistIds.includes(cake.id)) {
@@ -194,7 +215,7 @@ function StorefrontApp() {
     wishlistIds,
     selectedCategory,
     searchQuery,
-    siteContent.categories,
+    activeCategoryNames,
   ]);
 
   const handleToggleWishlist = useCallback(
@@ -215,12 +236,22 @@ function StorefrontApp() {
       selectedOptionNames: string[],
       unitPrice: number,
       cakeMessage: string,
-      quantity = 1
+      quantity = 1,
+      specialInstructions = '',
+      addonsUnitPrice?: number
     ) => {
+      if (cake.isAvailable === false) {
+        triggerToast(`"${cake.name}" is currently sold out.`);
+        return;
+      }
       const addQty = Math.max(1, quantity);
+      const computedAddons =
+        typeof addonsUnitPrice === 'number'
+          ? addonsUnitPrice
+          : Math.max(0, unitPrice - cake.basePrice);
       const signatureKey = `${cake.id}::${[...selectedOptionIds]
         .sort()
-        .join('|')}::${cakeMessage}`;
+        .join('|')}::${cakeMessage}::${specialInstructions}`;
 
       setCartItems((prev) => {
         const existingIndex = prev.findIndex(
@@ -242,12 +273,14 @@ function StorefrontApp() {
             name: cake.name,
             image_url: cake.image_url,
             basePrice: cake.basePrice,
+            addonsUnitPrice: computedAddons,
             unitPrice,
             quantity: addQty,
             weight: cake.weight,
             selectedOptionIds,
             selectedOptionNames,
             cakeMessage,
+            specialInstructions: specialInstructions || undefined,
           },
         ];
       });
@@ -262,18 +295,33 @@ function StorefrontApp() {
   const handleQuickAdd = useCallback(
     (cake: CakeItem, e?: React.MouseEvent) => {
       if (e) e.stopPropagation();
+      if (cake.isAvailable === false) {
+        triggerToast(`"${cake.name}" is currently unavailable.`);
+        return;
+      }
       setActiveHeroCakeId(cake.id);
-      const defaults = cake.customizerOptions.filter((o) => o.defaultSelected);
+      const groups = getEffectiveOptionGroups(cake);
+      const defaultChoices = groups.flatMap((g) => {
+        const flagged = g.choices.filter((c) => c.defaultSelected);
+        if (flagged.length > 0) return flagged;
+        return g.required && g.choices[0] ? [g.choices[0]] : [];
+      });
+      const addonsSum = defaultChoices.reduce(
+        (sum, ch) => sum + (ch.priceDelta || 0),
+        0
+      );
       handleAddCustomizedToCart(
         cake,
-        defaults.map((o) => o.id),
-        defaults.map((o) => o.name),
-        cake.basePrice,
+        defaultChoices.map((o) => o.id),
+        defaultChoices.map((o) => o.name),
+        cake.basePrice + addonsSum,
         '',
-        1
+        1,
+        '',
+        addonsSum
       );
     },
-    [handleAddCustomizedToCart]
+    [handleAddCustomizedToCart, triggerToast]
   );
 
   const handleSelectCakeForDetail = useCallback((cake: CakeItem) => {
@@ -412,6 +460,7 @@ function StorefrontApp() {
             {/* 3. Responsive Bento Discovery Feed */}
             <HomeFeed
               siteContent={siteContent}
+              categories={categories}
               cakes={filteredCakes}
               allCakes={menuCakes}
               matchedBadgesMap={matchedBadgesMap}
